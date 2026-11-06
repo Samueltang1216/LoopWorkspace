@@ -1,0 +1,65 @@
+name: Build unsigned Loop IPA
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build_unsigned_loop.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Select upstream Xcode toolchain
+        run: sudo xcode-select --switch /Applications/Xcode_27.0.app/Contents/Developer
+      - name: Record source versions
+        run: |
+          mkdir -p dist/signing-reference
+          git rev-parse HEAD > dist/source-commit.txt
+          git submodule status --recursive >> dist/source-commit.txt
+          cat VersionOverride.xcconfig
+          test -d MedtrumKit/MedtrumKit
+          cp Loop/Loop/Loop.entitlements dist/signing-reference/
+      - name: Build unsigned iPhone release
+        run: |
+          set -o pipefail
+          xcodebuild -workspace LoopWorkspace.xcworkspace \
+            -scheme LoopWorkspace -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/loop-derived" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM=UNSIGNED00 LOOP_DEVELOPMENT_TEAM=UNSIGNED00 \
+            build 2>&1 | tee "$RUNNER_TEMP/loop-build.log"
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/loop-derived/Build/Products/Release-iphoneos/Loop.app"
+          test -d "$app"
+          /usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Info.plist"
+          find "$app" -iname '*Medtrum*'
+          mkdir -p dist/Payload
+          ditto "$app" dist/Payload/Loop.app
+          cd dist
+          ditto -c -k --keepParent Payload Loop-3.14.11-unsigned.ipa
+          unzip -t Loop-3.14.11-unsigned.ipa | tail -1
+          shasum -a 256 Loop-3.14.11-unsigned.ipa > SHA256.txt
+      - name: Upload IPA and signing reference
+        uses: actions/upload-artifact@v4
+        with:
+          name: Loop-3.14.11-unsigned
+          path: |
+            dist/*.ipa
+            dist/*.txt
+            dist/signing-reference/
+          if-no-files-found: error
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loop-build-log
+          path: ${{ runner.temp }}/loop-build.log
+          if-no-files-found: ignore
